@@ -1,0 +1,49 @@
+.errorMessage {
+color: red;
+}
+
+.infoMessage {
+color: blue;
+}
+
+
+.loginCard{
+  background-image: url('wave.png');
+  background-size: contain;
+  background-repeat: no-repeat;
+  background-position: bottom;
+}
+
+.button-gradient {
+  background-image: linear-gradient(to right, #1D976C 0%, #93F9B9  51%, #1D976C  100%);
+  margin: 10px;
+  padding: 15px 45px;
+  text-align: center;
+  text-transform: uppercase;
+  transition: 0.5s;
+  background-size: 200% auto;
+  color: white;            
+  box-shadow: 0 0 20px #eee;
+  border-radius: 10px;
+  display: block;
+}
+
+.button-gradient:hover {
+  background-position: right center; /* change the direction of the change here */
+  color: #fff;
+  text-decoration: none;
+}
+
+.ribbon {
+    position: absolute;
+    top: 0;
+    right: 0;
+    width: 150px;
+    height: 22px;
+    margin-right: -50px;
+    margin-top: 15px;
+    -ms-transform: rotate(45deg); /* IE 9 */
+    -webkit-transform: rotate(45deg); /* Safari prior 9.0 */
+    transform: rotate(45deg); /* Standard syntax */
+  }
+         

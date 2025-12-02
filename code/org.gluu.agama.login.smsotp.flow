@@ -1,0 +1,77 @@
+// Start subflow for user otp code validation
+Flow org.gluu.agama.login.smsotp
+     Basepath ""
+     Timeout 900 seconds
+     Inputs validationService username phone
+// Log flow imputs provided by the flow caller.
+Log "@info Information received from the caller: " username phone
+otpUiFeedback = {}
+resendCount = 0
+validationAttempts = 0
+maxSMS = Repeat 20 times max
+     //  Show UI to collect OTP code from user.
+     otpCreds = RRF "smsOtp.ftlh" otpUiFeedback
+     When otpCreds.changenumber is "yes"
+          it_gtasp = {success:false, error: "Your error message here"}
+          Finish it_gtasp
+     Otherwise
+          When otpCreds.hasRequestedNewCode is "yes"
+               // Log new code request
+               Log "@info User has requested a new code."
+               When resendCount is 3
+                    // "Maximum resend attempts exceeded"
+                    Log "@info Maximum resend attempts exceeded"
+                    // ExceededResendAttempts
+                    it_resend = {success: false, error: "ExceededResendAttempts"}
+                    Finish it_resend
+               resendCount = Call org.gluu.agama.login.CounterHelper#increment resendCount
+               Log "@info Resend attempt number: " resendCount
+               // Resend otp
+               resendHasSucceed = Call validationService sendOTPCode username phone
+               When resendHasSucceed is null
+                    // Fail to resend new code to user.
+                    Log "@info Fail to resend new code to user. " resendHasSucceed
+                    // "Error occurs while sending new code to you. Please contact site administrator."
+                    otpUiFeedback.errorMessage = "Error occurs while sending new code to you. Please contact site administrator."
+                    otpUiFeedback.infoMessage = ""
+                    isResending = true
+               // New OTP code send successfully!
+               Log "@info New OTP code send successfully!" resendHasSucceed
+               // "A new OTP code has been send to you on your mobile phone."
+               otpUiFeedback.infoMessage = "An OTP code has been send to your register mobile number."
+               otpUiFeedback.errorMessage = ""
+               isResending = true
+          Otherwise
+               //  Add log entry with collected code in log file.
+               Log "@info Information provided by the user is : " otpCreds.code
+               // validationAttempts
+               validationAttempts = Call org.gluu.agama.login.CounterHelper#increment validationAttempts
+               // Add log entry withvalidation result in log file.
+               Log "@info Validation attempt number: " validationAttempts
+               // Check validation
+               When validationAttempts is 4
+                    // Log validation exceeded
+                    Log "@info Maximum validation attempts exceeded"
+                    it_otpmax = { success: false, error: "ExceededTheNumberOfAttemptsAllowed" }
+                    // End validation exceeded
+                    Finish it_otpmax
+               Otherwise
+                    //  Validate the OTP code provided by the user.
+                    otpValidationResult = Call validationService validateOTPCode phone otpCreds.code
+                    // Add log entry withvalidation result in log file.
+                    Log "@info OTP validation result is:" otpValidationResult
+                    // If otp validation was successful
+                    When otpValidationResult is true
+                         Log "@info OTP validated Successfully"
+                         Finish otpValidationResult
+                    Otherwise
+                         // The maximum number of attempt has been reached.
+                         Log "@info Invalid code provided "
+                         // Provide feedback to user.
+                         otpUiFeedback.errorMessage = "Invalid code provided."
+                         otpUiFeedback.infoMessage = ""
+// "OTP verification loop completed"
+Log "@info OTP verification loop completed"
+it_loopmax = { success: false, error: "UnexpectedLoopCompletion" }
+// SMS OTP error
+Finish it_loopmax
