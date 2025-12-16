@@ -23,6 +23,9 @@ import java.util.stream.Collectors;
 import com.twilio.Twilio;
 import com.twilio.rest.api.v2010.account.Message;
 import com.twilio.type.PhoneNumber;
+import io.jans.service.net.NetworkService;
+import jakarta.servlet.http.HttpServletRequest;
+
 
 public class JansNewPasswordService extends NewPasswordService {
 
@@ -42,6 +45,8 @@ public class JansNewPasswordService extends NewPasswordService {
     private String INVALID_LOGIN_COUNT_ATTRIBUTE = "jansCountInvalidLogin";
     private int DEFAULT_MAX_LOGIN_ATTEMPT = 3;
     private int DEFAULT_LOCK_EXP_TIME = 180;
+    private static final Map<String, List<Long>> ipAccessLog = new HashMap<>();
+    private Set<String> whitelistedIps = new HashSet<>();
 
     private HashMap<String, String> flowConfig;
     private static final Map<String, String> otpStore = new HashMap<>();
@@ -54,6 +59,66 @@ public class JansNewPasswordService extends NewPasswordService {
     }
 
     public JansNewPasswordService() {
+    }
+
+    private boolean isWhitelistedIp(String ip) {
+        try {
+            String list = flowConfig.get("WHITELISTED_IPS");
+            if (list == null || ip == null)
+                return false;
+
+            return Arrays.stream(list.split(","))
+                    .map(String::trim)
+                    .anyMatch(ip::equals);
+
+        } catch (Exception e) {
+            logger.error("Whitelist check failed: {}", e.getMessage());
+            return false;
+        }
+    }
+
+    private void logIncomingHeaders() {
+        try {
+            HttpServletRequest request = CdiUtil.bean(HttpServletRequest.class);
+
+            LogUtils.log("|+++++++++++++++++++++++++++++++++++++| ===== Incoming Headers =====");
+
+            Enumeration<String> headerNames = request.getHeaderNames();
+            if (headerNames == null) {
+                LogUtils.log("|+++++++++++++++++++++++++++++++++++++| No headers found.");
+                return;
+            }
+
+            while (headerNames.hasMoreElements()) {
+                String header = headerNames.nextElement();
+                String value = request.getHeader(header);
+                LogUtils.log("|org.gluu.agama.change.phonenumber| HEADER: {} = {}", header, value);
+            }
+
+            LogUtils.log("|org.gluu.agama.change.phonenumber| ===========================");
+
+        } catch (Exception e) {
+            LogUtils.log("|org.gluu.agama.change.phonenumber| Failed to log headers: {}", e.getMessage());
+        }
+    }
+
+    private String extractClientIp() {
+        try {
+            HttpServletRequest request = CdiUtil.bean(HttpServletRequest.class);
+
+            // 1️⃣ Check X-Forwarded-For first (most reliable)
+            String xff = request.getHeader("X-Forwarded-For");
+            if (xff != null && !xff.isEmpty()) {
+                // Handles multiple IPs: "10.1.1.1, 192.168.1.10"
+                return xff.split(",")[0].trim();
+            }
+
+            // 2️⃣ fallback to remote address
+            return request.getRemoteAddr();
+        } catch (Exception e) {
+            LogUtils.log("Failed to extract client IP: {}", e.getMessage());
+            return "127.0.0.1";
+        }
     }
 
     @Override
@@ -211,6 +276,22 @@ public class JansNewPasswordService extends NewPasswordService {
     }
 
     public boolean sendOTPCode(String username, String phone) {
+
+        logIncomingHeaders(); // Log headers for debugging
+
+        String clientIp = extractClientIp(); // ✅ Read stored IP instead of parameter
+
+        logger.info("Using IP {} for OTP request of user {}", clientIp, phone);
+
+        // ✅ Enforce resend rate limit
+        if (isIpBlocked(clientIp)) {
+            logger.info("IP {} is blocked for 24h due to excessive OTP requests", clientIp);
+            return null;
+            }
+
+            recordOtpAttempt(clientIp); // ✅ Record attempt with stored IP
+            logger.info("✅ OTP attempt recorded for IP {} (Total: {})", clientIp, ipAccessLog.get(clientIp).size());
+
         try {
             // Get user preferred language from profile
             User user = userService.getUser(username);
@@ -406,5 +487,48 @@ public class JansNewPasswordService extends NewPasswordService {
         // Default: Extract 2-digit country code
         return cleaned.substring(0, 2);
     }
+
+    // SMS-IP-BLOCKING-FIXES
+    private void recordOtpAttempt(String clientIp) {
+        long now = System.currentTimeMillis();
+        long timeWindow = Long.parseLong(flowConfig.getOrDefault("TIME_WINDOW_MS", "86400000"));
+
+        ipAccessLog.compute(clientIp, (key, timestamps) -> {
+            if (timestamps == null)
+                timestamps = new ArrayList<>();
+
+            // timestamps.removeIf(ts -> now - ts > TIME_WINDOW_MS);
+            timestamps.removeIf(ts -> now - ts > timeWindow);
+            timestamps.add(now);
+            return timestamps;
+        });
+        // ✅ FIXED: Was using 'ip' instead of 'clientIp'
+        logger.info("📊 OTP attempt recorded for IP {} → count: {}", clientIp, ipAccessLog.get(clientIp).size());
+    }
+
+    private boolean isIpBlocked(String clientIp) {
+        if (isWhitelistedIp(clientIp)) {
+            logger.info("IP {} is WHITELISTED — skipping OTP blocking", clientIp);
+            return false;
+        }
+        int maxAttempts = Integer.parseInt(flowConfig.getOrDefault("MAX_SMS_OTP_PER_DAY", "4"));
+        long timeWindow = Long.parseLong(flowConfig.getOrDefault("TIME_WINDOW_MS", "86400000"));
+
+        List<Long> timestamps = ipAccessLog.get(clientIp);
+        if (timestamps == null)
+            return false;
+
+        long now = System.currentTimeMillis();
+        timestamps.removeIf(ts -> now - ts > timeWindow);
+
+        boolean blocked = timestamps.size() >= maxAttempts;
+
+        if (blocked) {
+            logger.warn("IP {} BLOCKED — Attempts: {} / {}", clientIp, timestamps.size(), maxAttempts);
+        }
+        return blocked;
+    }
+
+
 
 }
